@@ -11,7 +11,5 @@ int main(int argc, char **argv)
     spinner.start();
     ros::waitForShutdown();
 
-    fast_lio_sam_sc_qn_.~FastLioSamScQn(); // Explicit call of destructor
-
     return 0;
 }

@@ -8,6 +8,7 @@
 #include <limits>
 #include <iostream>
 #include <utility> // pair
+#include <mutex>
 ///// PCL
 #include <pcl/point_types.h> //pt
 #include <pcl/point_cloud.h> //cloud
@@ -23,6 +24,7 @@
 ///// coded headers
 #include "pose_pcd.hpp"
 #include "utilities.hpp"
+#include "algorithm_improvements.hpp"
 using PcdPair = std::tuple<pcl::PointCloud<PointType>, pcl::PointCloud<PointType>>;
 
 struct NanoGICPConfig
@@ -56,9 +58,12 @@ struct LoopClosureConfig
 {
     bool enable_quatro_ = true;
     bool enable_submap_matching_ = true;
+    bool enable_candidate_consensus_ = true;
     int num_submap_keyframes_ = 10;
     double voxel_res_ = 0.1;
-    double scancontext_max_correspondence_distance_;
+    double scancontext_max_correspondence_distance_ = 35.0;
+    int loop_candidate_confirmations_ = 2;
+    int loop_candidate_lag_tolerance_ = 1;
     NanoGICPConfig gicp_config_;
     QuatroConfig quatro_config_;
 };
@@ -83,6 +88,8 @@ private:
     pcl::PointCloud<PointType> coarse_aligned_;
     pcl::PointCloud<PointType> aligned_;
     LoopClosureConfig config_;
+    fast_lio_sam_sc_qn::LoopCandidateConsensus candidate_consensus_;
+    std::mutex scancontext_mutex_;
 
 public:
     explicit LoopClosure(const LoopClosureConfig &config);

@@ -1,8 +1,9 @@
 #include "loop_closure.h"
 
 LoopClosure::LoopClosure(const LoopClosureConfig &config)
+    : config_(config),
+      candidate_consensus_(config.loop_candidate_confirmations_, config.loop_candidate_lag_tolerance_)
 {
-    config_ = config;
     const auto &gc = config_.gicp_config_;
     const auto &qc = config_.quatro_config_;
     ////// nano_gicp init
@@ -33,25 +34,35 @@ LoopClosure::~LoopClosure() {}
 
 void LoopClosure::updateScancontext(pcl::PointCloud<PointType> cloud)
 {
+    std::lock_guard<std::mutex> lock(scancontext_mutex_);
     sc_manager_.makeAndSaveScancontextAndKeys(cloud);
 }
 
 int LoopClosure::fetchCandidateKeyframeIdx(const PosePcd &query_keyframe,
                                            const std::vector<PosePcd> &keyframes)
 {
+    std::lock_guard<std::mutex> lock(scancontext_mutex_);
     // from ScanContext, get the loop candidate
     std::pair<int, float> sc_detected_ = sc_manager_.detectLoopClosureIDGivenScan(query_keyframe.pcd_); // int: nearest node index,
                                                                                                         // float: relative yaw
     int candidate_keyframe_idx = sc_detected_.first;
-    if (candidate_keyframe_idx >= 0) // if exists
+    if (candidate_keyframe_idx >= 0 &&
+        candidate_keyframe_idx < static_cast<int>(keyframes.size()) &&
+        candidate_keyframe_idx < query_keyframe.idx_) // candidate must be an older keyframe
     {
         // if close enough
         if ((keyframes[candidate_keyframe_idx].pose_corrected_eig_.block<3, 1>(0, 3) - query_keyframe.pose_corrected_eig_.block<3, 1>(0, 3))
                 .norm() < config_.scancontext_max_correspondence_distance_)
         {
-            return candidate_keyframe_idx;
+            if (!config_.enable_candidate_consensus_)
+            {
+                candidate_consensus_.reset();
+                return candidate_keyframe_idx;
+            }
+            return candidate_consensus_.update(query_keyframe.idx_, candidate_keyframe_idx);
         }
     }
+    candidate_consensus_.reset();
     return -1;
 }
 
@@ -64,6 +75,12 @@ PcdPair LoopClosure::setSrcAndDstCloud(const std::vector<PosePcd> &keyframes,
                                        const bool enable_submap_matching)
 {
     pcl::PointCloud<PointType> dst_accum, src_accum;
+    if (src_idx < 0 || dst_idx < 0 ||
+        src_idx >= static_cast<int>(keyframes.size()) ||
+        dst_idx >= static_cast<int>(keyframes.size()))
+    {
+        return std::make_tuple(src_accum, dst_accum);
+    }
     int num_approx = keyframes[src_idx].pcd_.size() * 2 * submap_range;
     src_accum.reserve(num_approx);
     dst_accum.reserve(num_approx);
@@ -71,14 +88,14 @@ PcdPair LoopClosure::setSrcAndDstCloud(const std::vector<PosePcd> &keyframes,
     {
         for (int i = src_idx - submap_range; i < src_idx + submap_range + 1; ++i)
         {
-            if (i >= 0 && i < static_cast<int>(keyframes.size() - 1))
+            if (i >= 0 && i < static_cast<int>(keyframes.size()))
             {
                 src_accum += transformPcd(keyframes[i].pcd_, keyframes[i].pose_corrected_eig_);
             }
         }
         for (int i = dst_idx - submap_range; i < dst_idx + submap_range + 1; ++i)
         {
-            if (i >= 0 && i < static_cast<int>(keyframes.size() - 1))
+            if (i >= 0 && i < static_cast<int>(keyframes.size()))
             {
                 dst_accum += transformPcd(keyframes[i].pcd_, keyframes[i].pose_corrected_eig_);
             }
@@ -97,7 +114,7 @@ PcdPair LoopClosure::setSrcAndDstCloud(const std::vector<PosePcd> &keyframes,
             // empirically scan-to-submap matching works better
             for (int i = dst_idx - submap_range; i < dst_idx + submap_range + 1; ++i)
             {
-                if (i >= 0 && i < static_cast<int>(keyframes.size() - 1))
+                if (i >= 0 && i < static_cast<int>(keyframes.size()))
                 {
                     dst_accum += transformPcd(keyframes[i].pcd_, keyframes[i].pose_corrected_eig_);
                 }
@@ -111,6 +128,11 @@ RegistrationOutput LoopClosure::icpAlignment(const pcl::PointCloud<PointType> &s
                                              const pcl::PointCloud<PointType> &dst)
 {
     RegistrationOutput reg_output;
+    const size_t minimum_points = static_cast<size_t>(std::max(10, config_.gicp_config_.nano_correspondences_number_));
+    if (src.size() < minimum_points || dst.size() < minimum_points)
+    {
+        return reg_output;
+    }
     aligned_.clear();
     // merge subkeyframes before ICP
     pcl::PointCloud<PointType>::Ptr src_cloud(new pcl::PointCloud<PointType>());
@@ -126,7 +148,8 @@ RegistrationOutput LoopClosure::icpAlignment(const pcl::PointCloud<PointType> &s
     // handle results
     reg_output.score_ = nano_gicp_.getFitnessScore();
     // if matchness score is lower than threshold, (lower is better)
-    if (nano_gicp_.hasConverged() && reg_output.score_ < config_.gicp_config_.icp_score_thr_)
+    if (nano_gicp_.hasConverged() && std::isfinite(reg_output.score_) &&
+        reg_output.score_ < config_.gicp_config_.icp_score_thr_)
     {
         reg_output.is_valid_ = true;
         reg_output.is_converged_ = true;
@@ -174,6 +197,11 @@ RegistrationOutput LoopClosure::performLoopClosure(const PosePcd &query_keyframe
                                                                config_.voxel_res_,
                                                                config_.enable_quatro_,
                                                                config_.enable_submap_matching_);
+        const size_t minimum_points = static_cast<size_t>(std::max(10, config_.gicp_config_.nano_correspondences_number_));
+        if (src_cloud.size() < minimum_points || dst_cloud.size() < minimum_points)
+        {
+            return reg_output;
+        }
         // Only for visualization
         *src_cloud_ = src_cloud;
         *dst_cloud_ = dst_cloud;

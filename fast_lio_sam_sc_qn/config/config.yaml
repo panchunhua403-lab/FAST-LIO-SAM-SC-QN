@@ -5,9 +5,14 @@ basic:
 
 keyframe:
   keyframe_threshold: 1.5                     # unit [meter] every this distance, generate keyframe
+  enable_rotation_keyframes: true              # ablation switch
+  keyframe_rotation_threshold_deg: 10.0        # also create a keyframe after this accumulated rotation
   num_submap_keyframes: 10                     # how many subkeyframes are merged to ICP with current keyframe (closest-this ~ closest+this, if exists)
   enable_submap_matching: false               # If it is set to be `true`, submap-level (coarse-to-)fine alignment will be performed
                                               # note: without Quatro, anyway scan-to-submap matching is performed, as that shows better performance
+  loop_candidate_confirmations: 2              # require repeated place-recognition support before registration
+  loop_candidate_lag_tolerance: 1               # allow this much keyframe-index drift between confirmations
+  enable_candidate_consensus: true              # ablation switch
 
 quatro_nano_gicp_voxel_resolution: 0.3        # voxel resolution to use Quatro and Nano-GICP matching
 save_voxel_resolution: 0.3                    # voxel resolution to save map in .pcd format
@@ -17,7 +22,7 @@ nano_gicp:                                    # all values are from Nano-GICP of
   thread_number: 0                            # if 0, max number of core
   icp_score_threshold: 1.5                    # lower is more accurate, for loop detection
   correspondences_number: 15
-  max_correspondence_distance: 35.0           # this is also used for candidate trimming after ScanContext
+  max_correspondence_distance: 35.0           # maximum Nano-GICP correspondence distance [m]
   max_iter: 32
   transformation_epsilon: 0.01
   euclidean_fitness_epsilon: 0.01
@@ -39,6 +44,15 @@ quatro:                                       # all values are from Quatro offic
     gnc_factor: 1.4                           # Control the magnitue of the increase in non-linearity. The larger the value, the steeper the increase in nonlinearity.
     rot_cost_diff_threshold: 0.0001           # The cost threshold is compared with the difference between costs of consecutive iterations.
                                               # Once the diff. of cost < `rot_cost_diff_threshold`, then the optimization is finished.
+
+loop_factor:
+  enable_adaptive_noise: true                   # ablation switch: split rotation/translation variance from fitness and geometry
+  enable_robust_kernel: true                    # ablation switch: Cauchy loss for loop factors
+  fitness_sigma_scale: 1.0                     # heuristic scale from sqrt(GICP fitness) to translation sigma [m]
+  translation_sigma_min: 0.03                  # lower bound [m]
+  translation_sigma_max: 0.50                  # upper bound [m]
+  rotation_sigma_min_deg: 0.5                  # lower bound [deg], scaled by target-cloud RMS radius
+  rotation_sigma_max_deg: 10.0                 # upper bound [deg]
 
 result:
   save_map_pcd: true                         # Save result map in .pcd format, not voxelized and hence file size could be huge

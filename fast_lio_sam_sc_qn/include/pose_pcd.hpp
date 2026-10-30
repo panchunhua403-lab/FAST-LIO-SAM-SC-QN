@@ -12,6 +12,7 @@ struct PosePcd
     double timestamp_;
     int idx_;
     bool processed_ = false;
+    bool ready_for_loop_ = false;
     PosePcd() {}
     PosePcd(const nav_msgs::Odometry &odom_in,
             const sensor_msgs::PointCloud2 &pcd_in,
